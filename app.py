@@ -1,46 +1,58 @@
-import asyncio, datetime as dt, json, os, uuid, logging
+# app.py — Diarization (embeddings locaux) · unifié
+# -------------------------------------------------
+import asyncio, datetime as dt, json, os, uuid, logging, tempfile, shutil, io
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple, Optional
 
 import numpy as np
-import httpx, uvicorn, torchaudio
+import uvicorn
 from fastapi import FastAPI, File, HTTPException, UploadFile, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from filelock import FileLock
 
-import io
+# Audio utils (robuste: ogg/webm/wav/… -> wav 16k mono)
+from pydub import AudioSegment
+
+# Embedding model (local)
+import torch
+from pyannote.audio import Model, Inference
 
 log = logging.getLogger("diarization")
 logging.basicConfig(level=logging.INFO)
 
-# ------------------------------------------------------------------ config
+# ============================== Config ==============================
 VALID_TOKENS = {t.strip() for t in os.getenv("API_TOKENS", "").split(",") if t.strip()}
-API_URL = "https://api-audio2embedding.c0.cloud-pi-native.com/get_embedding/"
-EMBEDDING_STORE = Path("embeddings.json")
-NOISE_STORE = Path("noise_embeddings.json")
+
+MODEL_ID = os.getenv("EMB_MODEL_ID", "pyannote/wespeaker-voxceleb-resnet34-LM")
+DEVICE = os.getenv("EMB_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
+WINDOW = os.getenv("EMB_WINDOW", "whole")  # "whole" recommandé pour voix courtes
+
+EMBEDDING_STORE = Path(os.getenv("EMBEDDING_STORE", "embeddings.json"))
+NOISE_STORE = Path(os.getenv("NOISE_STORE", "noise_embeddings.json"))
 EMBEDDING_LOCK = FileLock(str(EMBEDDING_STORE) + ".lock")
 NOISE_LOCK = FileLock(str(NOISE_STORE) + ".lock")
 
-SIMILARITY_THRESHOLD = 0.6
-NOISE_THRESHOLD = 0.5
-RETENTION_HOURS = 1
-PURGE_INTERVAL = 3600
+SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.6"))
+NOISE_THRESHOLD = float(os.getenv("NOISE_THRESHOLD", "0.5"))
+RETENTION_HOURS = int(os.getenv("RETENTION_HOURS", "1"))
+PURGE_INTERVAL = int(os.getenv("PURGE_INTERVAL", "3600"))
 
-# ------------------------------------------------------------------ app
-app = FastAPI(title="Optimised Diarisation Service")
+# ============================== App ==============================
+app = FastAPI(title="Optimised Diarisation Service (unified)")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"], allow_credentials=True,
+    allow_methods=["*"], allow_headers=["*"],
 )
 
-# ------------------------------------------------------------------ helpers
+# ============================== Auth ==============================
 def _verify_token(authorization: str = Header(...)) -> None:
-    if not authorization.startswith("Bearer ") or authorization[7:] not in VALID_TOKENS:
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing Bearer token")
+    if authorization[7:] not in VALID_TOKENS:
         raise HTTPException(status_code=401, detail="Invalid token")
 
+# ============================== Stores helpers ==============================
 def _load(path: Path, lock: FileLock) -> Dict[str, dict]:
     with lock:
         return json.loads(path.read_text()) if path.exists() else {}
@@ -56,7 +68,6 @@ def _l2(x: np.ndarray) -> np.ndarray:
 def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(a @ b)
 
-# ------------------------------------------------------------------ embedding mgmt
 def _purge() -> None:
     cutoff = (dt.datetime.utcnow() - dt.timedelta(hours=RETENTION_HOURS)).isoformat()
     data = _load(EMBEDDING_STORE, EMBEDDING_LOCK)
@@ -79,7 +90,7 @@ def _update(guid: str, emb: List[float]) -> None:
     data[guid]["date"] = dt.datetime.utcnow().isoformat()
     _save(data, EMBEDDING_STORE, EMBEDDING_LOCK)
 
-def _best_match(emb: List[float]) -> tuple[str | None, float]:
+def _best_match(emb: List[float]) -> Tuple[Optional[str], float]:
     vec = _l2(np.asarray(emb, dtype=np.float32))
     data = _load(EMBEDDING_STORE, EMBEDDING_LOCK)
     best, score = None, -1.0
@@ -97,74 +108,132 @@ def _is_noise(emb: List[float]) -> bool:
     ]
     return any(_cosine(vec, nv) > NOISE_THRESHOLD for nv in noise_vecs)
 
-# ------------------------------------------------------------------ audio
-async def _wav_bytes(file: UploadFile) -> tuple[bytes, float]:
-    loop = asyncio.get_event_loop()
-    buf = await file.read()
-    waveform, sr = await loop.run_in_executor(None, torchaudio.load, buf)
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(0, keepdim=True)
-    if sr != 16_000:
-        resampler = torchaudio.transforms.Resample(sr, 16_000)
-        waveform = await loop.run_in_executor(None, resampler, waveform)
-    out = io.BytesIO()
-    await loop.run_in_executor(
-        None,
-        lambda: torchaudio.save(out, waveform, 16_000, format="wav"),
-    )
+# ============================== Audio I/O ==============================
+def _load_audio_any(src_path: str) -> AudioSegment:
+    """
+    Essaie successivement : auto (ffmpeg), ogg, webm.
+    """
+    last_err = None
+    for fmt in (None, "ogg", "webm"):
+        try:
+            return (AudioSegment.from_file(src_path, format=fmt)
+                    if fmt else AudioSegment.from_file(src_path))
+        except Exception as e:
+            last_err = e
+    raise last_err
 
-    duration = waveform.shape[-1] / 16_000
-    return out.getvalue(), duration
+def _to_wav_16k_mono_bytes(src_tmpfile_path: str) -> bytes:
+    audio = _load_audio_any(src_tmpfile_path)
+    audio = audio.set_frame_rate(16_000).set_channels(1)
+    fd, wav_path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        audio.export(wav_path, format="wav")
+        with open(wav_path, "rb") as f:
+            return f.read()
+    finally:
+        try:
+            os.remove(wav_path)
+        except Exception:
+            pass
 
-async def _embedding(wav_bytes: bytes) -> List[float]:
-    async with httpx.AsyncClient(timeout=60) as client:
-        files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
-        r = await client.post(API_URL, files=files, headers={"accept": "application/json"})
-        r.raise_for_status()
-        return r.json()["embedding"]
+# ============================== Embedding model ==============================
+# Charge le modèle au démarrage, pousse sur DEVICE, prépare Inference
+log.info(f"Loading embedding model: {MODEL_ID} on {DEVICE}")
+_model = Model.from_pretrained(MODEL_ID)
+_inference = Inference(_model, window=WINDOW)
+_inference.to(torch.device(DEVICE))
 
-# ------------------------------------------------------------------ routes
+def _embedding_from_wav_bytes(wav_bytes: bytes) -> List[float]:
+    # pyannote.Inference attend un chemin; on écrit un tmp
+    fd, path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        with open(path, "wb") as f:
+            f.write(wav_bytes)
+        emb = _inference(path)
+        return emb.tolist()
+    finally:
+        try:
+            os.remove(path)
+        except Exception:
+            pass
 
+# ============================== Background purge ==============================
 @app.on_event("startup")
 async def _startup() -> None:
     async def _purge_task():
         while True:
-            await asyncio.get_event_loop().run_in_executor(None, _purge)
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, _purge)
             await asyncio.sleep(PURGE_INTERVAL)
     asyncio.create_task(_purge_task())
 
-async def _purge_loop():
-    while True:
-        await asyncio.sleep(PURGE_INTERVAL)
-        await asyncio.get_event_loop().run_in_executor(None, _purge)
-
+# ============================== Routes ==============================
 @app.post("/upload-audio/")
-async def upload_audio(
-    file: UploadFile = File(...), _=Depends(_verify_token)
-) -> dict:
-    wav_bytes, duration = await _wav_bytes(file)
-    emb = await _embedding(wav_bytes)
+async def upload_audio(file: UploadFile = File(...), _=Depends(_verify_token)) -> dict:
+    # On écrit d’abord le flux uploadé sur disque (nécessaire pour pydub/ffmpeg)
+    suffix = Path(file.filename or "").suffix or ".bin"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        shutil.copyfileobj(file.file, tmp)
+        src_path = tmp.name
 
-    if duration < 3:
-        if _is_noise(emb):
-            return {"identifier": f"noise-{uuid.uuid4()}", "noise": True, "duration": duration}
+    wav_bytes: Optional[bytes] = None
+    try:
+        wav_bytes = _to_wav_16k_mono_bytes(src_path)
+
+        # Durée (approx) depuis taille/PCM mono 16kHz int16 => 2 bytes/sample
+        duration = len(wav_bytes) / (2 * 16_000)
+
+        # Embedding local (non bloquant: threadpool)
+        loop = asyncio.get_event_loop()
+        emb = await loop.run_in_executor(None, _embedding_from_wav_bytes, wav_bytes)
+
+        if duration < 3:
+            if _is_noise(emb):
+                return {
+                    "identifier": f"noise-{uuid.uuid4()}",
+                    "noise": True,
+                    "duration": duration,
+                }
+            best, score = _best_match(emb)
+            if best is None:
+                return {"identifier": "noise-0", "noise": True, "duration": duration}
+            return {
+                "identifier": best,
+                "noise": False,
+                "duration": duration,
+                "similarity": score,
+                "added": False,
+            }
+
         best, score = _best_match(emb)
-        if best is None:
-            return {"identifier": "noise-0", "noise": True, "duration": duration}
-        return {"identifier": best, "noise": False, "duration": duration, "similarity": score, "added": False}
+        if best and score >= SIMILARITY_THRESHOLD:
+            await loop.run_in_executor(None, _update, best, emb)
+            return {
+                "identifier": best,
+                "noise": False,
+                "duration": duration,
+                "similarity": score,
+                "updated": True,
+            }
 
-    best, score = _best_match(emb)
-    if best and score >= SIMILARITY_THRESHOLD:
-        await asyncio.get_event_loop().run_in_executor(None, _update, best, emb)
-        return {"identifier": best, "noise": False, "duration": duration, "similarity": score, "updated": True}
+        guid = await loop.run_in_executor(None, _add, emb)
+        return {"identifier": guid, "noise": False, "duration": duration, "added": True}
 
-    guid = await asyncio.get_event_loop().run_in_executor(None, _add, emb)
-    return {"identifier": guid, "noise": False, "duration": duration, "added": True}
+    except Exception as e:
+        log.exception("Unhandled error while processing %s", file.filename)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        try:
+            os.remove(src_path)
+        except Exception:
+            pass
 
 @app.get("/health")
 async def health(_=Depends(_verify_token)):
-    return {"status": "ok"}
+    return {"status": "ok", "device": DEVICE, "model": MODEL_ID}
 
-# ------------------------------------------------------------------ run
+# ============================== Run ==============================
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
