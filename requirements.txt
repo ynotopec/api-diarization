@@ -1,5 +1,7 @@
 fastapi
 uvicorn
-requests
+pydub
+filelock
 numpy
-python-multipart
+torch
+pyannote.audio
