@@ -65,9 +65,6 @@ def _l2(x: np.ndarray) -> np.ndarray:
     n = np.linalg.norm(x)
     return x if n == 0 else x / n
 
-def _cosine(a: np.ndarray, b: np.ndarray) -> float:
-    return float(a @ b)
-
 def _purge() -> None:
     cutoff = (dt.datetime.utcnow() - dt.timedelta(hours=RETENTION_HOURS)).isoformat()
     data = _load(EMBEDDING_STORE, EMBEDDING_LOCK)
@@ -93,20 +90,24 @@ def _update(guid: str, emb: List[float]) -> None:
 def _best_match(emb: List[float]) -> Tuple[Optional[str], float]:
     vec = _l2(np.asarray(emb, dtype=np.float32))
     data = _load(EMBEDDING_STORE, EMBEDDING_LOCK)
-    best, score = None, -1.0
-    for k, v in data.items():
-        s = _cosine(vec, np.asarray(v["embedding"], dtype=np.float32))
-        if s > score:
-            best, score = k, s
-    return best, score
+    if not data:
+        return None, -1.0
+
+    keys = list(data.keys())
+    embeddings = np.asarray([data[k]["embedding"] for k in keys], dtype=np.float32)
+    scores = embeddings @ vec
+    best_idx = int(np.argmax(scores))
+    return keys[best_idx], float(scores[best_idx])
 
 def _is_noise(emb: List[float]) -> bool:
     vec = _l2(np.asarray(emb, dtype=np.float32))
-    noise_vecs = [
-        np.asarray(v["embedding"], dtype=np.float32)
-        for v in _load(NOISE_STORE, NOISE_LOCK).values()
-    ]
-    return any(_cosine(vec, nv) > NOISE_THRESHOLD for nv in noise_vecs)
+    noise_embeddings = _load(NOISE_STORE, NOISE_LOCK)
+    if not noise_embeddings:
+        return False
+
+    matrix = np.asarray([v["embedding"] for v in noise_embeddings.values()], dtype=np.float32)
+    scores = matrix @ vec
+    return bool(np.any(scores > NOISE_THRESHOLD))
 
 # ============================== Audio I/O ==============================
 def _load_audio_any(src_path: str) -> AudioSegment:
