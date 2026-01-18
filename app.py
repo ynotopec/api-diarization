@@ -55,7 +55,16 @@ def _verify_token(authorization: str = Header(...)) -> None:
 # ============================== Stores helpers ==============================
 def _load(path: Path, lock: FileLock) -> Dict[str, dict]:
     with lock:
-        return json.loads(path.read_text()) if path.exists() else {}
+        if not path.exists():
+            return {}
+        try:
+            content = path.read_text()
+            if not content.strip():
+                return {}
+            return json.loads(content)
+        except json.JSONDecodeError:
+            log.warning("Invalid JSON in %s; ignoring corrupted store.", path)
+            return {}
 
 def _save(data: Dict[str, dict], path: Path, lock: FileLock) -> None:
     with lock:
