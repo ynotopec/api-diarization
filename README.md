@@ -17,6 +17,27 @@ Ce projet fusionne les anciennes APIs `api-audio2embedding` et `api-diarization`
 
 ---
 
+## 🗺️ Diagramme (app.py)
+
+```mermaid
+flowchart TD
+    Client[Client] -->|POST /upload-audio| API[FastAPI app]
+    Client -->|GET /health| API
+    API -->|Auth Bearer| Auth{_verify_token}
+    Auth -->|OK| Upload[UploadFile -> tmp]
+    Upload -->|Convertit en wav 16k mono| Audio[_to_wav_16k_mono_bytes]
+    Audio -->|Embedding| Model[pyannote Inference]
+    Model -->|Score| Match{_best_match}
+    Model -->|Bruit?| Noise{_is_noise}
+    Match -->|score >= threshold| Update[_update]
+    Match -->|nouveau| Add[_add]
+    Update --> Store[(embeddings.json)]
+    Add --> Store
+    Noise --> NoiseStore[(noise_embeddings.json)]
+```
+
+---
+
 ## 📦 Installation
 
 ### 1. Dépendances système
