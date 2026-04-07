@@ -83,6 +83,9 @@ pyannote.audio
 | `API_TOKENS`           | Liste de tokens `Bearer` autorisés (séparés par virgule)       | –                                         |
 | `EMB_MODEL_ID`         | Modèle Hugging Face utilisé pour les embeddings                | `pyannote/wespeaker-voxceleb-resnet34-LM` |
 | `EMB_DEVICE`           | Périphérique d’inférence : `cuda` ou `cpu`                     | auto                                      |
+| `EMB_WINDOW`           | Fenêtre d’inférence `pyannote` (`whole` recommandé)            | `whole`                                   |
+| `EMBEDDING_STORE`      | Chemin du fichier JSON des embeddings locuteurs                | `embeddings.json`                         |
+| `NOISE_STORE`          | Chemin du fichier JSON des embeddings de bruit                 | `noise_embeddings.json`                   |
 | `SIMILARITY_THRESHOLD` | Seuil de similarité pour considérer deux voix comme identiques | `0.6`                                     |
 | `NOISE_THRESHOLD`      | Seuil pour filtrer les segments de bruit                       | `0.5`                                     |
 | `RETENTION_HOURS`      | Durée de conservation des embeddings en heures                 | `1`                                       |
@@ -140,6 +143,15 @@ Analyse un segment audio, génère son embedding, et tente d’identifier le loc
 | `similarity`        | Similarité cosinus avec la voix connue la plus proche                        |
 | `added` / `updated` | Indique si une nouvelle voix a été ajoutée ou une voix existante mise à jour |
 
+### Comportement pour les segments courts (`duration < 3s`)
+
+* Si l’empreinte est reconnue comme bruit (`NOISE_THRESHOLD`) :
+  * la réponse renvoie `noise: true` avec un identifiant `noise-<uuid>`.
+* Si aucun locuteur n’existe encore en base :
+  * la réponse renvoie `noise: true` avec `identifier: "noise-0"`.
+* Sinon :
+  * la réponse renvoie le meilleur locuteur connu avec `added: false`.
+
 ---
 
 ### 🔎 `GET /health`
@@ -186,6 +198,8 @@ curl -X POST "http://localhost:8000/upload-audio/" \
 * Lancer avec `--workers N` (Gunicorn/Uvicorn) pour gérer plusieurs requêtes concurrentes.
 * Monter `embeddings.json` sur un volume persistant (`PersistentVolumeClaim` en Kubernetes).
 * Ajuster `SIMILARITY_THRESHOLD` pour améliorer la précision selon votre cas d’usage.
+* Ajuster `NOISE_THRESHOLD` si des segments très courts sont souvent classés à tort en bruit.
+* Par défaut, les tokens sont lus depuis `API_TOKENS` (liste séparée par des virgules).
 
 ---
 
