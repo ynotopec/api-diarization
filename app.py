@@ -1,6 +1,6 @@
 # app.py — Diarization (embeddings locaux) · unifié
 # -------------------------------------------------
-import asyncio, datetime as dt, json, os, uuid, logging, tempfile, shutil, io
+import asyncio, datetime as dt, json, os, uuid, logging, tempfile, shutil
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
@@ -46,8 +46,8 @@ app.add_middleware(
 )
 
 # ============================== Auth ==============================
-def _verify_token(authorization: str = Header(...)) -> None:
-    if not authorization.startswith("Bearer "):
+def _verify_token(authorization: Optional[str] = Header(None)) -> None:
+    if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing Bearer token")
     if authorization[7:] not in VALID_TOKENS:
         raise HTTPException(status_code=401, detail="Invalid token")
@@ -91,6 +91,8 @@ def _add(emb: List[float]) -> str:
 def _update(guid: str, emb: List[float]) -> None:
     vec = _l2(np.asarray(emb, dtype=np.float32))
     data = _load(EMBEDDING_STORE, EMBEDDING_LOCK)
+    if guid not in data:
+        raise KeyError(f"Unknown speaker id: {guid}")
     old = np.asarray(data[guid]["embedding"], dtype=np.float32)
     data[guid]["embedding"] = _l2((old + vec) / 2).tolist()
     data[guid]["date"] = dt.datetime.utcnow().isoformat()
@@ -174,7 +176,7 @@ def _embedding_from_wav_bytes(wav_bytes: bytes) -> List[float]:
 async def _startup() -> None:
     async def _purge_task():
         while True:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, _purge)
             await asyncio.sleep(PURGE_INTERVAL)
     asyncio.create_task(_purge_task())
@@ -196,7 +198,7 @@ async def upload_audio(file: UploadFile = File(...), _=Depends(_verify_token)) -
         duration = len(wav_bytes) / (2 * 16_000)
 
         # Embedding local (non bloquant: threadpool)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         emb = await loop.run_in_executor(None, _embedding_from_wav_bytes, wav_bytes)
 
         # Vérifie le bruit pour toutes les durées (pas uniquement les voix courtes)
