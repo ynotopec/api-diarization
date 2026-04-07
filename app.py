@@ -199,13 +199,15 @@ async def upload_audio(file: UploadFile = File(...), _=Depends(_verify_token)) -
         loop = asyncio.get_event_loop()
         emb = await loop.run_in_executor(None, _embedding_from_wav_bytes, wav_bytes)
 
+        # Vérifie le bruit pour toutes les durées (pas uniquement les voix courtes)
+        if _is_noise(emb):
+            return {
+                "identifier": f"noise-{uuid.uuid4()}",
+                "noise": True,
+                "duration": duration,
+            }
+
         if duration < 3:
-            if _is_noise(emb):
-                return {
-                    "identifier": f"noise-{uuid.uuid4()}",
-                    "noise": True,
-                    "duration": duration,
-                }
             best, score = _best_match(emb)
             if best is None:
                 return {"identifier": "noise-0", "noise": True, "duration": duration}
