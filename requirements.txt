@@ -1,3 +1,16 @@
+#fastapi
+#uvicorn[standard]
+#httpx
+#numpy
+#scipy
+#filelock
+#torchaudio
+#python-multipart  # Pour UploadFile
+#aiofiles  # Utile pour les ops async sur fichiers
+#pydantic  # Inclus dans FastAPI, mais explicit pour clarté
+
+#faiss-cpu
+
 fastapi
 uvicorn
 pydub
@@ -5,3 +18,7 @@ filelock
 numpy
 torch
 pyannote.audio
+
+python-multipart
+
+setuptools<82
