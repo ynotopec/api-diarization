@@ -38,6 +38,34 @@ flowchart TD
 
 ---
 
+## 🔍 Revue de l’algorithme (doc ↔ code)
+
+Cette section décrit le comportement **réellement implémenté** dans `app.py` pour aligner la doc avec le code.
+
+### Ordre exact des décisions dans `POST /upload-audio/`
+
+1. Le fichier uploadé est écrit en temporaire, puis converti en WAV 16 kHz mono.
+2. La durée est estimée à partir de la taille PCM (`len(wav_bytes) / (2 * 16000)`).
+3. L’embedding est calculé via `pyannote` en threadpool.
+4. La détection de bruit (`_is_noise`) est exécutée **avant toute autre décision**, quelle que soit la durée.
+   - Si bruit détecté : retour immédiat `noise: true` avec identifiant `noise-<uuid>`.
+5. Si `duration < 3` secondes :
+   - s’il n’existe aucun locuteur connu : `identifier: "noise-0"`, `noise: true`;
+   - sinon : retour du meilleur locuteur (`_best_match`) avec `added: false` (même si score faible).
+6. Si `duration >= 3` secondes :
+   - meilleur score trouvé via similarité cosinus;
+   - si `score >= SIMILARITY_THRESHOLD` : mise à jour incrémentale (`_update`) et `updated: true`;
+   - sinon : création d’un nouveau profil (`_add`) et `added: true`.
+
+### Détails importants côté stockage
+
+- Les embeddings locuteurs sont normalisés L2 à l’insertion et à la mise à jour.
+- La mise à jour d’un locuteur fait une moyenne `(old + new)/2`, puis renormalise.
+- Les accès JSON sont protégés par `filelock`.
+- La purge périodique supprime uniquement les entrées de `embeddings.json` selon `RETENTION_HOURS`.
+
+---
+
 ## 📦 Installation
 
 ### 1. Dépendances système
