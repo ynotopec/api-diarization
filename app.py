@@ -25,7 +25,10 @@ VALID_TOKENS = {t.strip() for t in os.getenv("API_TOKENS", "").split(",") if t.s
 
 MODEL_ID = os.getenv("EMB_MODEL_ID", "pyannote/wespeaker-voxceleb-resnet34-LM")
 REQUESTED_DEVICE = os.getenv("EMB_DEVICE", "auto").strip().lower()
-DEVICE = "cuda" if REQUESTED_DEVICE == "auto" and torch.cuda.is_available() else ("cpu" if REQUESTED_DEVICE == "auto" else REQUESTED_DEVICE)
+if REQUESTED_DEVICE == "auto":
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+else:
+    DEVICE = REQUESTED_DEVICE
 WINDOW = os.getenv("EMB_WINDOW", "whole")  # "whole" recommandé pour voix courtes
 
 EMBEDDING_STORE = Path(os.getenv("EMBEDDING_STORE", "embeddings.json"))

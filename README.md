@@ -28,7 +28,7 @@ Set at least `API_TOKENS` in `.env`.
 source ./run.sh 0.0.0.0 8000
 ```
 
-`run.sh` also works from systemd, for example:
+`run.sh` does not use `exec`, so if you launch it with `source ./run.sh ...` and stop Uvicorn with `CTRL+C`, your shell is preserved. It also works from systemd, for example:
 
 ```ini
 [Service]

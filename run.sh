@@ -5,39 +5,54 @@
 # Compatible with systemd: ExecStart=/bin/bash -lc 'source /path/to/run.sh 0.0.0.0 8000'
 set -Eeuo pipefail
 
-SERVER_ADDRESS="${1:-${HOST:-${SERVER_NAME:-0.0.0.0}}}"
-PORT_NUMBER="${2:-${PORT:-${SERVER_PORT:-8000}}}"
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_NAME="$(basename "${PROJECT_DIR}")"
-VENV_DIR="${VENV_DIR:-${HOME}/venv/${PROJECT_NAME}}"
-UVICORN_RELOAD="${UVICORN_RELOAD:-0}"
+_run_diarization_api() {
+  local server_address="${1:-${HOST:-${SERVER_NAME:-0.0.0.0}}}"
+  local port_number="${2:-${PORT:-${SERVER_PORT:-8000}}}"
+  local project_dir project_name venv_dir uvicorn_reload
 
-cd "${PROJECT_DIR}"
+  project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  project_name="$(basename "${project_dir}")"
+  venv_dir="${VENV_DIR:-${HOME}/venv/${project_name}}"
+  uvicorn_reload="${UVICORN_RELOAD:-0}"
 
-if [ -f .env ]; then
-  set -a
+  cd "${project_dir}"
+
+  if [ -f .env ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
+  fi
+
+  export HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"
+  export HOST="${server_address}"
+  export PORT="${port_number}"
+  export SERVER_NAME="${server_address}"
+  export SERVER_PORT="${port_number}"
+
+  if [ ! -x "${venv_dir}/bin/python" ]; then
+    echo "Virtualenv not found at ${venv_dir}; running install.sh" >&2
+    "${project_dir}/install.sh"
+  fi
+
   # shellcheck disable=SC1091
-  source .env
-  set +a
+  source "${venv_dir}/bin/activate"
+
+  local reload_args=()
+  if [ "${uvicorn_reload}" = "1" ]; then
+    reload_args+=(--reload)
+  fi
+
+  python -m uvicorn app:app --host "${server_address}" --port "${port_number}" "${reload_args[@]}"
+}
+
+set +e
+_run_diarization_api "$@"
+_run_status=$?
+set -e
+unset -f _run_diarization_api
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return "${_run_status}"
 fi
-
-export HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"
-export HOST="${SERVER_ADDRESS}"
-export PORT="${PORT_NUMBER}"
-export SERVER_NAME="${SERVER_ADDRESS}"
-export SERVER_PORT="${PORT_NUMBER}"
-
-if [ ! -x "${VENV_DIR}/bin/python" ]; then
-  echo "Virtualenv not found at ${VENV_DIR}; running install.sh" >&2
-  "${PROJECT_DIR}/install.sh"
-fi
-
-# shellcheck disable=SC1091
-source "${VENV_DIR}/bin/activate"
-
-reload_args=()
-if [ "${UVICORN_RELOAD}" = "1" ]; then
-  reload_args+=(--reload)
-fi
-
-exec python -m uvicorn app:app --host "${SERVER_ADDRESS}" --port "${PORT_NUMBER}" "${reload_args[@]}"
+exit "${_run_status}"
