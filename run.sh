@@ -25,6 +25,7 @@ _run_diarization_api() {
   fi
 
   export HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"
+  export PYTHONWARNINGS="${PYTHONWARNINGS:-ignore:invalid escape sequence:SyntaxWarning}"
   export HOST="${server_address}"
   export PORT="${port_number}"
   export SERVER_NAME="${server_address}"

@@ -154,11 +154,42 @@ def _to_wav_16k_mono_bytes(src_tmpfile_path: str) -> bytes:
             pass
 
 # ============================== Embedding model ==============================
-# Charge le modèle au démarrage, pousse sur DEVICE, prépare Inference
-log.info(f"Loading embedding model: {MODEL_ID} on {DEVICE}")
-_model = Model.from_pretrained(MODEL_ID)
-_inference = Inference(_model, window=WINDOW)
-_inference.to(torch.device(DEVICE))
+def _load_inference(device: str) -> Inference:
+    log.info("Loading embedding model: %s on %s", MODEL_ID, device)
+    model = Model.from_pretrained(MODEL_ID)
+    inference = Inference(model, window=WINDOW)
+    inference.to(torch.device(device))
+    return inference
+
+def _is_cuda_initialization_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "cuda" in message and (
+        "out of memory" in message
+        or "memoryallocation" in message
+        or "cudnn" in message
+        or "cublas" in message
+    )
+
+try:
+    _inference = _load_inference(DEVICE)
+except Exception as exc:
+    if (
+        REQUESTED_DEVICE != "auto"
+        or DEVICE != "cuda"
+        or not _is_cuda_initialization_error(exc)
+    ):
+        raise
+    log.warning(
+        "Unable to initialize the embedding model on CUDA (%s). "
+        "Falling back to CPU because EMB_DEVICE=auto.",
+        exc,
+    )
+    try:
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
+    DEVICE = "cpu"
+    _inference = _load_inference(DEVICE)
 
 def _embedding_from_wav_bytes(wav_bytes: bytes) -> List[float]:
     # pyannote.Inference attend un chemin; on écrit un tmp

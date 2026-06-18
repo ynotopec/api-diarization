@@ -42,9 +42,10 @@ Restart=always
 Important variables are shown in `.env.example`. Optional/default variables are commented with `#`.
 
 - `API_TOKENS`: comma-separated bearer tokens.
-- `EMB_DEVICE`: `auto`, `cuda`, `cuda:0`, or `cpu`. Default `auto` uses CUDA when available.
+- `EMB_DEVICE`: `auto`, `cuda`, `cuda:0`, or `cpu`. Default `auto` uses CUDA when available and falls back to CPU if CUDA model initialization runs out of memory.
 - `EMBEDDING_STORE`: speaker embedding JSON store.
 - `NOISE_STORE`: noise embedding JSON store.
+- `PYTHONWARNINGS`: defaults in `run.sh` to silence third-party pydub `SyntaxWarning` noise on Python 3.12.
 
 ## API
 
