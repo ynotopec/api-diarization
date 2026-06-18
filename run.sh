@@ -1,48 +1,43 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# Usage:
+#   source ./run.sh [IP] [PORT]
+#   ./run.sh [IP] [PORT]
+# Compatible with systemd: ExecStart=/bin/bash -lc 'source /path/to/run.sh 0.0.0.0 8000'
+set -Eeuo pipefail
 
-serverAddress=$1
-portNumber=$2
+SERVER_ADDRESS="${1:-${HOST:-${SERVER_NAME:-0.0.0.0}}}"
+PORT_NUMBER="${2:-${PORT:-${SERVER_PORT:-8000}}}"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_NAME="$(basename "${PROJECT_DIR}")"
+VENV_DIR="${VENV_DIR:-${HOME}/venv/${PROJECT_NAME}}"
+UVICORN_RELOAD="${UVICORN_RELOAD:-0}"
 
-pythonVersion=python3
+cd "${PROJECT_DIR}"
 
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-pythonDir=~/"venv/$(basename "${DIR}")"
-cd $DIR
-
-deactivate 2>/dev/null
-mkdir -p "${pythonDir}"
-${pythonVersion} -m venv "${pythonDir}"
-source "${pythonDir}"/bin/activate
-
-#intall
-#${pythonVersion} -m pip cache purge ; ${pythonVersion} -m pip install -U pip setuptools wheel ; ${pythonVersion} -m pip install -U -r requirements.txt
-#optimize space
-#(jdupes -X size+:99M -r -L ~ >/dev/null 2>&1 )&
-
-export HF_HUB_DISABLE_TELEMETRY=1
-if [ ! -z "${serverAddress}" ] ;then
-  export GRADIO_SERVER_NAME="${serverAddress}"
-  export SERVER_NAME="${serverAddress}"
-fi
-if [ ! -z "${portNumber}" ] ;then
-  export GRADIO_SERVER_PORT="${portNumber}"
-  export SERVER_PORT="${portNumber}"
-  export BACK_PORT=$((SERVER_PORT + 1))
-fi
-#export CUDA_LAUNCH_BLOCKING=1
-
-# Charger les variables d'environnement depuis .env
-if [ -f ".env" ]; then
-#  export $(grep -v '^#' .env | xargs)
+if [ -f .env ]; then
   set -a
+  # shellcheck disable=SC1091
   source .env
   set +a
-else
-  echo ".env file not found!"
-  exit 1
 fi
 
-#${pythonVersion} app.py $([ ! -z "${serverAddress}" ] && echo --host ${serverAddress}) $([ ! -z "${portNumber}" ] && echo --port ${portNumber})
-#${pythonVersion} -m streamlit run app.py --browser.gatherUsageStats false $([ ! -z "${serverAddress}" ] && echo --server.address ${serverAddress}) $([ ! -z "${portNumber}" ] && echo --server.port ${portNumber})
-${pythonVersion} -m uvicorn app:app --reload $([ ! -z "${serverAddress}" ] && echo --host ${serverAddress}) $([ ! -z "${portNumber}" ] && echo --port ${portNumber})
-#${pythonVersion} back.py
+export HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"
+export HOST="${SERVER_ADDRESS}"
+export PORT="${PORT_NUMBER}"
+export SERVER_NAME="${SERVER_ADDRESS}"
+export SERVER_PORT="${PORT_NUMBER}"
+
+if [ ! -x "${VENV_DIR}/bin/python" ]; then
+  echo "Virtualenv not found at ${VENV_DIR}; running install.sh" >&2
+  "${PROJECT_DIR}/install.sh"
+fi
+
+# shellcheck disable=SC1091
+source "${VENV_DIR}/bin/activate"
+
+reload_args=()
+if [ "${UVICORN_RELOAD}" = "1" ]; then
+  reload_args+=(--reload)
+fi
+
+exec python -m uvicorn app:app --host "${SERVER_ADDRESS}" --port "${PORT_NUMBER}" "${reload_args[@]}"

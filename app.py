@@ -24,7 +24,8 @@ logging.basicConfig(level=logging.INFO)
 VALID_TOKENS = {t.strip() for t in os.getenv("API_TOKENS", "").split(",") if t.strip()}
 
 MODEL_ID = os.getenv("EMB_MODEL_ID", "pyannote/wespeaker-voxceleb-resnet34-LM")
-DEVICE = os.getenv("EMB_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
+REQUESTED_DEVICE = os.getenv("EMB_DEVICE", "auto").strip().lower()
+DEVICE = "cuda" if REQUESTED_DEVICE == "auto" and torch.cuda.is_available() else ("cpu" if REQUESTED_DEVICE == "auto" else REQUESTED_DEVICE)
 WINDOW = os.getenv("EMB_WINDOW", "whole")  # "whole" recommandé pour voix courtes
 
 EMBEDDING_STORE = Path(os.getenv("EMBEDDING_STORE", "embeddings.json"))
@@ -38,7 +39,7 @@ RETENTION_HOURS = int(os.getenv("RETENTION_HOURS", "1"))
 PURGE_INTERVAL = int(os.getenv("PURGE_INTERVAL", "3600"))
 
 # ============================== App ==============================
-app = FastAPI(title="Optimised Diarisation Service (unified)")
+app = FastAPI(title="Diarization API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
@@ -49,7 +50,7 @@ app.add_middleware(
 def _verify_token(authorization: Optional[str] = Header(None)) -> None:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing Bearer token")
-    if authorization[7:] not in VALID_TOKENS:
+    if not VALID_TOKENS or authorization[7:] not in VALID_TOKENS:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 # ============================== Stores helpers ==============================
@@ -182,6 +183,11 @@ async def _startup() -> None:
     asyncio.create_task(_purge_task())
 
 # ============================== Routes ==============================
+@app.get("/health")
+async def health() -> dict:
+    return {"status": "ok", "device": DEVICE, "model": MODEL_ID}
+
+@app.post("/v1/diarize")
 @app.post("/upload-audio/")
 async def upload_audio(file: UploadFile = File(...), _=Depends(_verify_token)) -> dict:
     # On écrit d’abord le flux uploadé sur disque (nécessaire pour pydub/ffmpeg)
