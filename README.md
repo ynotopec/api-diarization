@@ -5,13 +5,13 @@ Minimal FastAPI service for local speaker embedding and identification. It accep
 ## Requirements
 
 - Linux with Python 3.10+
-- `uv`
+- `uv` (installed automatically by `install.sh` when `curl` is available)
 - `ffmpeg`
 - NVIDIA GPU recommended for production, including H100 and DGX Spark class systems. CPU works for testing but is slower.
 
-## Install or upgrade
+## Install or compatible upgrade
 
-`install.sh` is idempotent and safe to rerun for compatible upgrades. It creates the virtual environment in `~/venv/api-diarization` by default and installs dependencies with `uv`.
+`install.sh` is idempotent and safe to rerun for compatible upgrades. It creates the virtual environment in `~/venv/<basename project dir>` by default, so this repository installs to `~/venv/api-diarization` unless you override `VENV_DIR`.
 
 ```bash
 sudo apt-get update && sudo apt-get install -y ffmpeg
@@ -20,7 +20,11 @@ cp .env.example .env
 nano .env
 ```
 
-Set at least `API_TOKENS` in `.env`.
+Set at least `API_TOKENS` in `.env` before production use. For a CUDA-specific PyTorch wheel on H100/DGX Spark hosts, set `TORCH_INDEX_URL` before install, for example:
+
+```bash
+TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128 ./install.sh
+```
 
 ## Start
 
@@ -28,7 +32,7 @@ Set at least `API_TOKENS` in `.env`.
 source ./run.sh 0.0.0.0 8000
 ```
 
-`run.sh` does not use `exec`, so if you launch it with `source ./run.sh ...` and stop Uvicorn with `CTRL+C`, your shell is preserved. It also works from systemd, for example:
+`run.sh` accepts `source ./run.sh [IP] [PORT]`, auto-runs `install.sh` if the venv is missing, loads `.env`, and avoids `exec` so your shell survives `CTRL+C`. It is also compatible with systemd:
 
 ```ini
 [Service]
@@ -41,11 +45,11 @@ Restart=always
 
 Important variables are shown in `.env.example`. Optional/default variables are commented with `#`.
 
-- `API_TOKENS`: comma-separated bearer tokens.
+- `API_TOKENS`: comma-separated API tokens.
 - `EMB_DEVICE`: `auto`, `cuda`, `cuda:0`, or `cpu`. Default `auto` uses CUDA when available and falls back to CPU if CUDA model initialization runs out of memory.
+- `TORCH_INDEX_URL`: optional PyTorch wheel index for CUDA-specific installs during `install.sh`.
 - `EMBEDDING_STORE`: speaker embedding JSON store.
 - `NOISE_STORE`: noise embedding JSON store.
-- `PYTHONWARNINGS`: defaults in `run.sh` to silence third-party pydub `SyntaxWarning` noise on Python 3.12.
 
 ## API
 
@@ -53,15 +57,22 @@ Important variables are shown in `.env.example`. Optional/default variables are 
 
 ```bash
 curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/v1/health
 ```
 
 ### Diarize audio
 
-Popular versioned endpoint:
+Popular token styles are supported: `Authorization: Bearer ...` and `X-API-Key: ...`.
 
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/diarize \
   -H 'Authorization: Bearer change-me' \
+  -F 'file=@sample.wav'
+```
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/diarize \
+  -H 'X-API-Key: change-me' \
   -F 'file=@sample.wav'
 ```
 

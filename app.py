@@ -6,8 +6,9 @@ from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, File, HTTPException, UploadFile, Header, Depends
+from fastapi import FastAPI, File, HTTPException, UploadFile, Depends, Security
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from filelock import FileLock
 
 # Audio utils (robuste: ogg/webm/wav/… -> wav 16k mono)
@@ -50,10 +51,20 @@ app.add_middleware(
 )
 
 # ============================== Auth ==============================
-def _verify_token(authorization: Optional[str] = Header(None)) -> None:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing Bearer token")
-    if not VALID_TOKENS or authorization[7:] not in VALID_TOKENS:
+bearer_scheme = HTTPBearer(auto_error=False)
+api_key_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+def _verify_token(
+    bearer: Optional[HTTPAuthorizationCredentials] = Security(bearer_scheme),
+    x_api_key: Optional[str] = Security(api_key_scheme),
+) -> None:
+    if not VALID_TOKENS:
+        raise HTTPException(status_code=503, detail="API_TOKENS is not configured")
+
+    token = bearer.credentials if bearer else x_api_key
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing Bearer token or X-API-Key")
+    if token not in VALID_TOKENS:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 # ============================== Stores helpers ==============================
@@ -218,6 +229,7 @@ async def _startup() -> None:
 
 # ============================== Routes ==============================
 @app.get("/health")
+@app.get("/v1/health")
 async def health() -> dict:
     return {"status": "ok", "device": DEVICE, "model": MODEL_ID}
 
@@ -283,10 +295,6 @@ async def upload_audio(file: UploadFile = File(...), _=Depends(_verify_token)) -
             os.remove(src_path)
         except Exception:
             pass
-
-@app.get("/health")
-async def health(_=Depends(_verify_token)):
-    return {"status": "ok", "device": DEVICE, "model": MODEL_ID}
 
 # ============================== Run ==============================
 if __name__ == "__main__":
