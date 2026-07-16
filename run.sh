@@ -1,48 +1,59 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# Usage:
+#   source ./run.sh [IP] [PORT]
+#   ./run.sh [IP] [PORT]
+# Compatible with systemd: ExecStart=/bin/bash -lc 'source /path/to/run.sh 0.0.0.0 8000'
+set -Eeuo pipefail
 
-serverAddress=$1
-portNumber=$2
+_run_diarization_api() {
+  local server_address="${1:-${HOST:-${SERVER_NAME:-0.0.0.0}}}"
+  local port_number="${2:-${PORT:-${SERVER_PORT:-8000}}}"
+  local project_dir project_name venv_dir uvicorn_reload
 
-pythonVersion=python3
+  project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  project_name="$(basename "${project_dir}")"
+  venv_dir="${VENV_DIR:-${HOME}/venv/${project_name}}"
+  uvicorn_reload="${UVICORN_RELOAD:-0}"
 
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-pythonDir=~/"venv/$(basename "${DIR}")"
-cd $DIR
+  cd "${project_dir}"
 
-deactivate 2>/dev/null
-mkdir -p "${pythonDir}"
-${pythonVersion} -m venv "${pythonDir}"
-source "${pythonDir}"/bin/activate
+  if [ -f .env ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
+  fi
 
-#intall
-#${pythonVersion} -m pip cache purge ; ${pythonVersion} -m pip install -U pip setuptools wheel ; ${pythonVersion} -m pip install -U -r requirements.txt
-#optimize space
-#(jdupes -X size+:99M -r -L ~ >/dev/null 2>&1 )&
+  export HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"
+  export PYTHONWARNINGS="${PYTHONWARNINGS:-ignore:invalid escape sequence:SyntaxWarning}"
+  export HOST="${server_address}"
+  export PORT="${port_number}"
+  export SERVER_NAME="${server_address}"
+  export SERVER_PORT="${port_number}"
 
-export HF_HUB_DISABLE_TELEMETRY=1
-if [ ! -z "${serverAddress}" ] ;then
-  export GRADIO_SERVER_NAME="${serverAddress}"
-  export SERVER_NAME="${serverAddress}"
+  if [ ! -x "${venv_dir}/bin/python" ]; then
+    echo "Virtualenv not found at ${venv_dir}; running install.sh" >&2
+    "${project_dir}/install.sh"
+  fi
+
+  # shellcheck disable=SC1091
+  source "${venv_dir}/bin/activate"
+
+  local reload_args=()
+  if [ "${uvicorn_reload}" = "1" ]; then
+    reload_args+=(--reload)
+  fi
+
+  python -m uvicorn app:app --host "${server_address}" --port "${port_number}" "${reload_args[@]}"
+}
+
+set +e
+_run_diarization_api "$@"
+_run_status=$?
+set -e
+unset -f _run_diarization_api
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return "${_run_status}"
 fi
-if [ ! -z "${portNumber}" ] ;then
-  export GRADIO_SERVER_PORT="${portNumber}"
-  export SERVER_PORT="${portNumber}"
-  export BACK_PORT=$((SERVER_PORT + 1))
-fi
-#export CUDA_LAUNCH_BLOCKING=1
-
-# Charger les variables d'environnement depuis .env
-if [ -f ".env" ]; then
-#  export $(grep -v '^#' .env | xargs)
-  set -a
-  source .env
-  set +a
-else
-  echo ".env file not found!"
-  exit 1
-fi
-
-#${pythonVersion} app.py $([ ! -z "${serverAddress}" ] && echo --host ${serverAddress}) $([ ! -z "${portNumber}" ] && echo --port ${portNumber})
-#${pythonVersion} -m streamlit run app.py --browser.gatherUsageStats false $([ ! -z "${serverAddress}" ] && echo --server.address ${serverAddress}) $([ ! -z "${portNumber}" ] && echo --server.port ${portNumber})
-${pythonVersion} -m uvicorn app:app --reload $([ ! -z "${serverAddress}" ] && echo --host ${serverAddress}) $([ ! -z "${portNumber}" ] && echo --port ${portNumber})
-#${pythonVersion} back.py
+exit "${_run_status}"

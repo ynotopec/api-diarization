@@ -1,157 +1,77 @@
-# 🧠 API Diarization — Audio Speaker Embedding & Identification (FastAPI)
+# API Diarization
 
-Service FastAPI de **diarisation audio optimisée** : il extrait des **embeddings vocaux** localement à l’aide de [`pyannote/wespeaker`](https://huggingface.co/pyannote/wespeaker-voxceleb-resnet34-LM), identifie les locuteurs déjà connus ou enregistre de nouveaux profils, et filtre les segments de **bruit**.
-Ce projet fusionne les anciennes APIs `api-audio2embedding` et `api-diarization` en un **service unique**.
+Minimal FastAPI service for local speaker embedding and identification. It accepts an audio file, converts it to 16 kHz mono WAV with ffmpeg/pydub, computes a local `pyannote.audio` embedding, and returns an existing or new speaker identifier.
 
----
+## Requirements
 
-## 🚀 Fonctionnalités
+- Linux with Python 3.10+
+- `uv`
+- `ffmpeg`
+- NVIDIA GPU recommended for production, including H100 and DGX Spark class systems. CPU works for testing but is slower.
 
-* 🔊 **Extraction d’embeddings audio** localement (pas d’appel réseau)
-* 👤 **Identification des locuteurs** par similarité cosinus
-* 🧠 **Apprentissage incrémental** : mise à jour automatique des embeddings connus
-* 🧹 **Purge automatique** des embeddings anciens (TTL configurable)
-* 🪫 **Détection de bruit** : segments courts ou bruit de fond ignorés
-* 🪪 **Sécurisation** par jeton `Bearer`
-* 🐳 Prêt pour **Docker / Kubernetes**
+## Install or upgrade
 
----
-
-## 🗺️ Diagramme (app.py)
-
-```mermaid
-flowchart TD
-    Client[Client] -->|POST /upload-audio| API[FastAPI app]
-    Client -->|GET /health| API
-    API -->|Auth Bearer| Auth{_verify_token}
-    Auth -->|OK| Upload[UploadFile -> tmp]
-    Upload -->|Convertit en wav 16k mono| Audio[_to_wav_16k_mono_bytes]
-    Audio -->|Embedding| Model[pyannote Inference]
-    Model -->|Score| Match{_best_match}
-    Model -->|Bruit?| Noise{_is_noise}
-    Match -->|score >= threshold| Update[_update]
-    Match -->|nouveau| Add[_add]
-    Update --> Store[(embeddings.json)]
-    Add --> Store
-    Noise --> NoiseStore[(noise_embeddings.json)]
-```
-
----
-
-## 🔍 Revue de l’algorithme (doc ↔ code)
-
-Cette section décrit le comportement **réellement implémenté** dans `app.py` pour aligner la doc avec le code.
-
-### Ordre exact des décisions dans `POST /upload-audio/`
-
-1. Le fichier uploadé est écrit en temporaire, puis converti en WAV 16 kHz mono.
-2. La durée est estimée à partir de la taille PCM (`len(wav_bytes) / (2 * 16000)`).
-3. L’embedding est calculé via `pyannote` en threadpool.
-4. La détection de bruit (`_is_noise`) est exécutée **avant toute autre décision**, quelle que soit la durée.
-   - Si bruit détecté : retour immédiat `noise: true` avec identifiant `noise-<uuid>`.
-5. Si `duration < 3` secondes :
-   - s’il n’existe aucun locuteur connu : `identifier: "noise-0"`, `noise: true`;
-   - sinon : retour du meilleur locuteur (`_best_match`) avec `added: false` (même si score faible).
-6. Si `duration >= 3` secondes :
-   - meilleur score trouvé via similarité cosinus;
-   - si `score >= SIMILARITY_THRESHOLD` : mise à jour incrémentale (`_update`) et `updated: true`;
-   - sinon : création d’un nouveau profil (`_add`) et `added: true`.
-
-### Détails importants côté stockage
-
-- Les embeddings locuteurs sont normalisés L2 à l’insertion et à la mise à jour.
-- La mise à jour d’un locuteur fait une moyenne `(old + new)/2`, puis renormalise.
-- Les accès JSON sont protégés par `filelock`.
-- La purge périodique supprime uniquement les entrées de `embeddings.json` selon `RETENTION_HOURS`.
-
----
-
-## 📦 Installation
-
-### 1. Dépendances système
-
-Assurez-vous d’avoir `ffmpeg` installé pour le support audio multi-format :
+`install.sh` is idempotent and safe to rerun for compatible upgrades. It creates the virtual environment in `~/venv/api-diarization` by default and installs dependencies with `uv`.
 
 ```bash
-sudo apt update && sudo apt install -y ffmpeg
+sudo apt-get update && sudo apt-get install -y ffmpeg
+./install.sh
+cp .env.example .env
+nano .env
 ```
 
-### 2. Créer un environnement Python
+Set at least `API_TOKENS` in `.env`.
+
+## Start
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -U pip
+source ./run.sh 0.0.0.0 8000
 ```
 
-### 3. Installer les dépendances Python
+`run.sh` does not use `exec`, so if you launch it with `source ./run.sh ...` and stop Uvicorn with `CTRL+C`, your shell is preserved. It also works from systemd, for example:
+
+```ini
+[Service]
+WorkingDirectory=/workspace/api-diarization
+ExecStart=/bin/bash -lc 'source /workspace/api-diarization/run.sh 0.0.0.0 8000'
+Restart=always
+```
+
+## Configuration
+
+Important variables are shown in `.env.example`. Optional/default variables are commented with `#`.
+
+- `API_TOKENS`: comma-separated bearer tokens.
+- `EMB_DEVICE`: `auto`, `cuda`, `cuda:0`, or `cpu`. Default `auto` uses CUDA when available and falls back to CPU if CUDA model initialization runs out of memory.
+- `EMBEDDING_STORE`: speaker embedding JSON store.
+- `NOISE_STORE`: noise embedding JSON store.
+- `PYTHONWARNINGS`: defaults in `run.sh` to silence third-party pydub `SyntaxWarning` noise on Python 3.12.
+
+## API
+
+### Health
 
 ```bash
-pip install -r requirements.txt
+curl http://127.0.0.1:8000/health
 ```
 
-Exemple de `requirements.txt` minimal :
+### Diarize audio
 
-```txt
-fastapi
-uvicorn
-pydub
-numpy
-filelock
-torch
-pyannote.audio
-```
-
----
-
-## ⚙️ Variables d’environnement
-
-| Variable               | Description                                                    | Défaut                                    |
-| ---------------------- | -------------------------------------------------------------- | ----------------------------------------- |
-| `API_TOKENS`           | Liste de tokens `Bearer` autorisés (séparés par virgule)       | –                                         |
-| `EMB_MODEL_ID`         | Modèle Hugging Face utilisé pour les embeddings                | `pyannote/wespeaker-voxceleb-resnet34-LM` |
-| `EMB_DEVICE`           | Périphérique d’inférence : `cuda` ou `cpu`                     | auto                                      |
-| `EMB_WINDOW`           | Fenêtre d’inférence `pyannote` (`whole` recommandé)            | `whole`                                   |
-| `EMBEDDING_STORE`      | Chemin du fichier JSON des embeddings locuteurs                | `embeddings.json`                         |
-| `NOISE_STORE`          | Chemin du fichier JSON des embeddings de bruit                 | `noise_embeddings.json`                   |
-| `SIMILARITY_THRESHOLD` | Seuil de similarité pour considérer deux voix comme identiques | `0.6`                                     |
-| `NOISE_THRESHOLD`      | Seuil pour filtrer les segments de bruit                       | `0.5`                                     |
-| `RETENTION_HOURS`      | Durée de conservation des embeddings en heures                 | `1`                                       |
-| `PURGE_INTERVAL`       | Intervalle de purge automatique (secondes)                     | `3600`                                    |
-
----
-
-## ▶️ Lancement
-
-### En développement
+Popular versioned endpoint:
 
 ```bash
-uvicorn app:app --host 0.0.0.0 --port 8000
+curl -X POST http://127.0.0.1:8000/v1/diarize \
+  -H 'Authorization: Bearer change-me' \
+  -F 'file=@sample.wav'
 ```
 
-### En production (ex. systemd ou Docker)
+Legacy endpoint remains available for compatibility:
 
-```bash
-python3 app.py
+```text
+POST /upload-audio/
 ```
 
----
-
-## 📡 Endpoints disponibles
-
-### 🔐 `POST /upload-audio/`
-
-Analyse un segment audio, génère son embedding, et tente d’identifier le locuteur.
-
-**Headers :**
-
-* `Authorization: Bearer <TOKEN>`
-
-**Body (multipart/form-data) :**
-
-* `file`: Fichier audio (`.wav`, `.ogg`, `.webm`, `.mp3`, etc.)
-
-**Réponse (JSON) :**
+Example response:
 
 ```json
 {
@@ -162,93 +82,3 @@ Analyse un segment audio, génère son embedding, et tente d’identifier le loc
   "updated": true
 }
 ```
-
-| Champ               | Description                                                                  |
-| ------------------- | ---------------------------------------------------------------------------- |
-| `identifier`        | ID unique de la voix reconnue ou ajoutée                                     |
-| `noise`             | `true` si segment considéré comme bruit                                      |
-| `duration`          | Durée du segment analysé (secondes)                                          |
-| `similarity`        | Similarité cosinus avec la voix connue la plus proche                        |
-| `added` / `updated` | Indique si une nouvelle voix a été ajoutée ou une voix existante mise à jour |
-
-### Comportement pour les segments courts (`duration < 3s`)
-
-* Si l’empreinte est reconnue comme bruit (`NOISE_THRESHOLD`) :
-  * la réponse renvoie `noise: true` avec un identifiant `noise-<uuid>`.
-* Si aucun locuteur n’existe encore en base :
-  * la réponse renvoie `noise: true` avec `identifier: "noise-0"`.
-* Sinon :
-  * la réponse renvoie le meilleur locuteur connu avec `added: false`.
-
----
-
-### 🔎 `GET /health`
-
-Vérifie l’état du service et du modèle.
-
-**Headers :**
-
-* `Authorization: Bearer <TOKEN>`
-
-**Réponse :**
-
-```json
-{
-  "status": "ok",
-  "device": "cuda",
-  "model": "pyannote/wespeaker-voxceleb-resnet34-LM"
-}
-```
-
----
-
-## 🧪 Exemple d’utilisation (cURL)
-
-```bash
-curl -X POST "http://localhost:8000/upload-audio/" \
-  -H "Authorization: Bearer my-secret-token" \
-  -F "file=@/path/to/sample.wav"
-```
-
----
-
-## 🧠 Fichiers d’embeddings
-
-* 📁 `embeddings.json` – stockage des profils de voix connus
-* 📁 `noise_embeddings.json` – stockage des profils considérés comme bruit
-
-> Ces fichiers sont verrouillés par `filelock` pour éviter les accès concurrents.
-
----
-
-## 🛠️ Astuces de production
-
-* Lancer avec `--workers N` (Gunicorn/Uvicorn) pour gérer plusieurs requêtes concurrentes.
-* Monter `embeddings.json` sur un volume persistant (`PersistentVolumeClaim` en Kubernetes).
-* Ajuster `SIMILARITY_THRESHOLD` pour améliorer la précision selon votre cas d’usage.
-* Ajuster `NOISE_THRESHOLD` si des segments très courts sont souvent classés à tort en bruit.
-* Par défaut, les tokens sont lus depuis `API_TOKENS` (liste séparée par des virgules).
-
----
-
-## 📊 Cas d’usage
-
-* 🎙️ Centre d’appels — reconnaître les interlocuteurs automatiquement
-* 🧑‍⚖️ Forensic audio — identification de locuteurs sur des extraits courts
-* 📞 VoIP monitoring — filtrage bruit / détection changement de locuteur
-* 🪶 RAG vocal — associer automatiquement un segment audio à un profil d’utilisateur
-
----
-
-## 🧑‍💻 Licence
-
-Ce projet est distribué sous licence MIT.
-⚠️ L’utilisation commerciale de certains modèles `pyannote` peut nécessiter une licence Hugging Face.
-
----
-
-## 🧬 Crédits
-
-* [pyannote.audio](https://github.com/pyannote/pyannote-audio) — embeddings et diarisation audio
-* [wespeaker](https://github.com/wenet-e2e/wespeaker) — backbone d’extraction vocale
-* [FastAPI](https://fastapi.tiangolo.com/) — framework web asynchrone
